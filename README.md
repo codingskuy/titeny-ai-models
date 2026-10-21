@@ -52,6 +52,9 @@ src/titeny_models/demand.py    # demand_v1.0.0: baseline 28h x hari besar x elas
 src/titeny_models/sinyal.py    # surplus/seimbang/defisit + rekomendasi maks 3 aksi per zona
 src/titeny_models/evaluasi.py  # MAPE, bias, target, gerbang naik versi
 src/titeny_models/backtest.py  # backtest walk-forward 90 hari (berjalan vs kandidat)
+src/titeny_models/kalibrasi.py   # P10-P90, kepercayaan, cakupan, pemicu kalibrasi ulang
+src/titeny_models/hindcast.py    # residual walk-forward -> kalibrasi per pasangan
+src/titeny_models/kalibrasi_store.py  # artefak residual_p90.json per versi
 src/titeny_models/skor_mingguan.py  # skor MAPE mingguan dari arsip prediksi + alarm
 src/titeny_models/kartu_model.py    # pembangkit model card
 model-card/                    # kartu harga/panen/demand (dari data SINTETIS, ditandai)

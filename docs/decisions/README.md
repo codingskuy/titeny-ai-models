@@ -13,3 +13,4 @@ Aturan menambah ADR:
 |---|---|---|
 | [ADR-0001](./ADR-0001-fondasi-teknis.md) | Fondasi teknis | Diterima |
 | [ADR-0002](./ADR-0002-kontrak-job-evaluasi-dan-gerbang-versi.md) | Kontrak job, definisi evaluasi, gerbang versi | Diusulkan |
+| [ADR-0003](./ADR-0003-kalibrasi-rentang-dan-kepercayaan.md) | Kalibrasi rentang P10-P90 dan kepercayaan | Diusulkan |
