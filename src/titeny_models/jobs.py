@@ -26,10 +26,20 @@ from pathlib import Path
 from .demand import ramal_demand_pasangan, terapkan_sinyal
 from .harga import WIB, ramal_harga_pasangan
 from .katalog import KABUPATEN_TERDEKAT
-from .muat import DataTidakLengkap, muat_masukan_harga
+from .muat import DataTidakLengkap, _baca, muat_masukan_harga
 from .muat_agro import muat_masukan_demand, muat_masukan_panen, muat_rasio_harga
 from .panen import awal_minggu, minggu_iso, ramal_panen_pasangan
 from .sinyal import rekomendasi_zona
+from .skor_mingguan import (
+    baca_arsip,
+    evaluasi_alarm,
+    ringkas_minggu,
+    riwayat_ringkasan,
+    skor_demand,
+    skor_harga,
+    skor_panen,
+    tulis_arsip,
+)
 
 KELUAR_OK, KELUAR_GAGAL, KELUAR_PAKAI = 0, 1, 2
 
@@ -78,6 +88,7 @@ def job_harga(data_dir: Path, keluar: Path, hari_ini: date) -> int:
         for b in baris:
             f.write(json.dumps(b, ensure_ascii=False) + "\n")
     sementara.replace(tujuan)  # atomik: tidak ada berkas setengah jadi
+    tulis_arsip(keluar / "arsip", "harga", hari_ini, baris)  # bahan skor MAPE mingguan
     _log(
         "info",
         "sukses",
@@ -117,6 +128,7 @@ def job_panen(data_dir: Path, keluar: Path, hari_ini: date) -> int:
         _log("error", "gagal", job="panen", alasan="tidak ada prediksi yang dihasilkan")
         return KELUAR_GAGAL
     _tulis_jsonl(keluar / "prediksi_panen.jsonl", baris)
+    tulis_arsip(keluar / "arsip", "panen", hari_ini, baris)
     rendah = sorted(
         {f"{b['komoditas_id']}|{b['kabupaten_id']}" for b in baris if b["kepercayaan"] == "rendah"}
     )
@@ -193,6 +205,7 @@ def job_demand(data_dir: Path, keluar: Path, hari_ini: date) -> int:
         for zona in zonas
     ]
     _tulis_jsonl(keluar / "prediksi_demand.jsonl", [p.as_dict() for p in prediksi])
+    tulis_arsip(keluar / "arsip", "demand", hari_ini, [p.as_dict() for p in prediksi])
     _tulis_jsonl(keluar / "rekomendasi.jsonl", rekom)
     label = [
         {"komoditas_id": p.komoditas_id, "zona": p.zona, "horizon": p.horizon, "label": p.label}
@@ -208,7 +221,79 @@ def job_demand(data_dir: Path, keluar: Path, hari_ini: date) -> int:
     return KELUAR_OK
 
 
+def _aktual_harga(data_dir: Path, sampai: date) -> dict[tuple[str, str], dict[date, float]]:
+    out: dict[tuple[str, str], dict[date, float]] = defaultdict(dict)
+    for b in _baca(data_dir / "harga_harian.csv"):
+        d = date.fromisoformat(b["tanggal"])
+        if d <= sampai:
+            out[(b["komoditas_id"], b["pasar_id"])][d] = float(b["harga_median"])
+    return out
+
+
+def _aktual_volume(data_dir: Path, sampai: date) -> dict[tuple[str, str], dict[date, float]]:
+    out: dict[tuple[str, str], dict[date, float]] = defaultdict(dict)
+    for b in _baca(data_dir / "transaksi_harian.csv"):
+        d = date.fromisoformat(b["tanggal"])
+        if d <= sampai:
+            out[(b["komoditas_id"], b["zona"])][d] = float(b["volume_kg"])
+    return out
+
+
+def _aktual_panen(data_dir: Path, sampai: date) -> dict[tuple[str, str], dict[str, tuple[str, float]]]:
+    out: dict[tuple[str, str], dict[str, tuple[str, float]]] = defaultdict(dict)
+    for b in _baca(data_dir / "hasil_panen.csv"):
+        d = date.fromisoformat(b["tanggal"])
+        if d > sampai:
+            continue
+        kunci, minggu = (b["komoditas_id"], b["kabupaten_id"]), minggu_iso(d)
+        lama = out[kunci].get(minggu, (b["musim"], 0.0))
+        out[kunci][minggu] = (b["musim"], lama[1] + float(b["hasil_kg"]))
+    return out
+
+
+def job_mape(data_dir: Path, keluar: Path, hari_ini: date) -> int:
+    """Skor MAPE mingguan (Minggu 23.00 WIB): `hari_ini` = hari Minggu penutup minggu skor.
+
+    Menulis `skor_mape_mingguan.jsonl` dan `ringkasan_mape.json`, arsip `arsip/ringkasan_mape-<minggu>.json`.
+    Gagal (kode 1) bila tak ada satu pun titik yang dapat dinilai (arsip prediksi atau aktual belum ada).
+    """
+    arsip_dir = keluar / "arsip"
+    try:
+        skor = []
+        if arsip := baca_arsip(arsip_dir, "harga"):
+            skor += skor_harga(arsip, _aktual_harga(data_dir, hari_ini), hari_ini)
+        if (arsip := baca_arsip(arsip_dir, "demand")) and (data_dir / "transaksi_harian.csv").exists():
+            skor += skor_demand(arsip, _aktual_volume(data_dir, hari_ini), hari_ini)
+        if (arsip := baca_arsip(arsip_dir, "panen")) and (data_dir / "hasil_panen.csv").exists():
+            skor += skor_panen(arsip, _aktual_panen(data_dir, hari_ini))
+    except DataTidakLengkap as e:
+        _log("error", "gagal", job="mape", alasan=str(e))
+        return KELUAR_GAGAL
+    if not skor:
+        _log(
+            "error", "gagal", job="mape", alasan="tidak ada titik yang dapat dinilai (arsip/aktual belum ada)"
+        )
+        return KELUAR_GAGAL
+
+    ringkasan = ringkas_minggu(skor, hari_ini)
+    alarm = evaluasi_alarm(riwayat_ringkasan(arsip_dir, ringkasan["minggu"]), ringkasan)
+    _tulis_jsonl(keluar / "skor_mape_mingguan.jsonl", [{"minggu": ringkasan["minggu"], **s} for s in skor])
+    (keluar / "ringkasan_mape.json").write_text(
+        json.dumps({**ringkasan, **alarm}, indent=2, ensure_ascii=False)
+    )
+    arsip_dir.mkdir(parents=True, exist_ok=True)
+    (arsip_dir / f"ringkasan_mape-{ringkasan['minggu']}.json").write_text(
+        json.dumps(ringkasan, ensure_ascii=False)
+    )
+    level = "warning" if alarm["pager_analis"] or any(alarm["tinjauan_analis"].values()) else "info"
+    _log(level, "sukses", job="mape", tanggal=hari_ini.isoformat(), minggu=ringkasan["minggu"], baris=len(skor),
+         harga_h7=ringkasan["harga"]["mape_h7"], pager_analis=alarm["pager_analis"],
+         tinjauan_analis=alarm["tinjauan_analis"])  # fmt: skip
+    return KELUAR_OK
+
+
 JOB: dict[str, Callable[[Path, Path, date], int]] = {
+    "mape": job_mape,
     "harga": job_harga,
     "panen": job_panen,
     "demand": job_demand,
