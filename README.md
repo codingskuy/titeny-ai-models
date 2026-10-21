@@ -15,19 +15,28 @@ Ekosistem: [Titeny-TownHall](https://github.com/Coding-Skuy/Titeny-TownHall).
 ## Cara pakai
 
 ```sh
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-python -m titeny_models.harga --komoditas cabai --hari 7
-python -m titeny_models.panen --komoditas padi --hari 30
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+pytest                      # uji (harus hijau)
+ruff check . && ruff format --check .
+
+# Data SINTETIS (bukan data nyata) -> job harga -> JSON-lines kolom tabel prediksi_harga
+python -m titeny_models.sintetis --keluar /tmp/titeny-data --akhir 2026-10-05 --hari 60
+python -m titeny_models.jobs harga --data /tmp/titeny-data --keluar /tmp/titeny-out --tanggal 2026-10-05
 ```
+
+Job terjadwal (`titeny-infra-devops`) memanggil `python -m titeny_models.jobs <harga|demand|panen|mape>`;
+kode keluar 0 = sukses, 1 = gagal, 2 = salah pakai. Env: `TITENY_DATA_DIR`, `TITENY_OUT_DIR`, `TITENY_TANGGAL`.
 
 ## Struktur
 
 ```text
-src/titeny_models/harga.py  # regresi harga 7 harian
-src/titeny_models/panen.py  # klasifikasi waktu panen
-tests/                      # uji cepat
+src/titeny_models/katalog.py   # 12 komoditas, 8 pasar, 6x5 panen, 8 zona, versi model
+src/titeny_models/harga.py     # harga_v1.0.0: metode 5 langkah + fallback FR-104
+src/titeny_models/muat.py      # pemuat CSV agregat (tanpa koneksi DB)
+src/titeny_models/jobs.py      # titik masuk job terjadwal
+src/titeny_models/sintetis.py  # fixture SINTETIS deterministik
+tests/                         # uji merah-hijau per langkah
 ```
 
 Keluaran model dikonsumsi oleh `titeny-backend-service` pada titik `/insight/harga` dan oleh dasbor `titeny-web`.
