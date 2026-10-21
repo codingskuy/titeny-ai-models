@@ -56,8 +56,11 @@ def _kalibrasi(blok: dict | None) -> str:
         return "## Kalibrasi rentang P10-P90\n\nBelum dihitung pada ringkasan ini (lihat TTN-AI-005).\n\n"
     return (
         "## Kalibrasi rentang P10-P90\n\n"
-        f"- Cakupan aktual: {_f(blok.get('cakupan_pct'))} (target 70-90%; < 60% memicu kalibrasi ulang)\n"
-        f"- Status: {blok.get('status', 'n/a')}\n\n"
+        "Rentang = P10/P90 dari 30 residual terbaru per pasangan dan horizon; cakupan dihitung out-of-sample "
+        "(interval hanya memakai residual yang sudah diketahui saat hari asal).\n\n"
+        f"- Cakupan aktual: {_f(blok.get('cakupan_pct'))} dari {blok.get('n', 'n/a')} titik "
+        "(target 70-90%; < 60% memicu kalibrasi ulang otomatis)\n"
+        f"- Status: `{blok.get('status', 'n/a')}`\n\n"
     )
 
 

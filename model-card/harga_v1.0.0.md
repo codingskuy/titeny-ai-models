@@ -49,7 +49,10 @@ Jumlah titik evaluasi: 57792.
 
 ## Kalibrasi rentang P10-P90
 
-Belum dihitung pada ringkasan ini (lihat TTN-AI-005).
+Rentang = P10/P90 dari 30 residual terbaru per pasangan dan horizon; cakupan dihitung out-of-sample (interval hanya memakai residual yang sudah diketahui saat hari asal).
+
+- Cakupan aktual: 64.62% dari 48384 titik (target 70-90%; < 60% memicu kalibrasi ulang otomatis)
+- Status: `di_bawah_target`
 
 ## Batasan
 

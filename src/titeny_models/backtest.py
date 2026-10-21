@@ -34,6 +34,7 @@ from .evaluasi import (
     periksa_target,
 )
 from .harga import WIB, InputHarga, ramal_harga_pasangan
+from .kalibrasi import cakupan_walk_forward, rentang_harga, rentang_kg, status_cakupan
 from .muat import muat_masukan_harga
 from .muat_agro import muat_masukan_demand
 
@@ -124,6 +125,12 @@ def _mape_per_kelompok(baris: list[dict], kunci_unit: str) -> dict[tuple[str, st
     return {k: sum(v) / len(v) for k, v in per_kom.items()}
 
 
+def _ringkas_kalibrasi(baris: list[dict], kunci_unit: str, fn_rentang) -> dict:
+    """Cakupan P10-P90 out-of-sample (interval dikalibrasi hanya dari residual yang sudah diketahui)."""
+    r = cakupan_walk_forward(baris, kunci_unit, fn_rentang)
+    return {**r, "status": status_cakupan(r["cakupan_pct"])}
+
+
 def ringkas_harga(baris: list[dict]) -> dict:
     per_kom = _mape_per_kelompok(baris, "pasar_id")
     h1 = {k: v for (k, hor), v in per_kom.items() if hor == "H+1"}
@@ -137,12 +144,16 @@ def ringkas_harga(baris: list[dict]) -> dict:
         "bias_h7": bias_ringkas([b["aktual"] for b in h7_baris], [b["prediksi"] for b in h7_baris]),
         "target": periksa_target(h1, h7),
         "jumlah_titik": len(baris),
+        "kalibrasi": _ringkas_kalibrasi(baris, "pasar_id", lambda p, k: rentang_harga(int(p), k)),
     }
 
 
 def ringkas_demand(baris: list[dict]) -> dict:
     per_kom = _mape_per_kelompok(baris, "zona")
-    keluar: dict = {"jumlah_titik": len(baris)}
+    keluar: dict = {
+        "jumlah_titik": len(baris),
+        "kalibrasi": _ringkas_kalibrasi(baris, "zona", rentang_kg),
+    }
     for hor, nama, batas in (
         ("H+7_total_kg", "h7", MAPE_DEMAND_H7_MAKS),
         ("H+30", "h30", MAPE_DEMAND_H30_PANTAU),

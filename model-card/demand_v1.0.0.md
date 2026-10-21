@@ -28,7 +28,10 @@ Jumlah titik evaluasi: 27456. Backtest memakai `rasio_harga = 1,0` (elastisitas 
 
 ## Kalibrasi rentang P10-P90
 
-Belum dihitung pada ringkasan ini (lihat TTN-AI-005).
+Rentang = P10/P90 dari 30 residual terbaru per pasangan dan horizon; cakupan dihitung out-of-sample (interval hanya memakai residual yang sudah diketahui saat hari asal).
+
+- Cakupan aktual: 56.17% dari 16512 titik (target 70-90%; < 60% memicu kalibrasi ulang otomatis)
+- Status: `kalibrasi_ulang`
 
 ## Batasan
 
