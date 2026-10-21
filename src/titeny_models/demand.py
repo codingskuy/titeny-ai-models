@@ -24,6 +24,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 
 from .harga import WIB
+from .kalibrasi import Kalibrasi, rentang_kg
 from .katalog import (
     KABUPATEN_TERDEKAT,
     LEBARAN_BERAS,
@@ -79,6 +80,7 @@ class InputDemand:
     hari_besar: Mapping[date, str] = field(default_factory=dict)  # S9: puasa|lebaran|natal_tahun_baru
     rasio_harga: float = 1.0
     waktu_hitung: datetime | None = None
+    kalibrasi: Mapping[str, Kalibrasi] = field(default_factory=dict)  # per horizon, TTN-AI-005
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,7 @@ def ramal_demand_pasangan(masuk: InputDemand) -> list[PrediksiDemand] | None:
         total *= elastis
         dasar = harian * n
         total = max(dasar * (1 - BATAS_PERUBAHAN), min(dasar * (1 + BATAS_PERUBAHAN), total))
+        bawah, atas = rentang_kg(total, masuk.kalibrasi.get(nama))  # None bila belum dikalibrasi
         hasil.append(
             PrediksiDemand(
                 komoditas_id=masuk.komoditas_id,
@@ -142,8 +145,8 @@ def ramal_demand_pasangan(masuk: InputDemand) -> list[PrediksiDemand] | None:
                 horizon=nama,
                 tanggal=masuk.hari_ini,
                 demand_prediksi_kg=total,
-                rentang_bawah_kg=None,
-                rentang_atas_kg=None,
+                rentang_bawah_kg=bawah,
+                rentang_atas_kg=atas,
                 sinyal="seimbang",
                 rekomendasi=[],
                 model_version=VERSI_DEMAND,

@@ -23,6 +23,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from .evaluasi import bias_ringkas, mape, tinjauan_bias
+from .kalibrasi import perlu_kalibrasi_ulang, status_cakupan
 from .panen import minggu_iso
 
 MAPE_H7_ALARM = 15.0
@@ -52,6 +53,7 @@ def skor_harga(
 ) -> list[dict]:
     awal = awal_minggu_skor(akhir)
     kelompok: dict[tuple[str, str, str], tuple[list, list]] = defaultdict(lambda: ([], []))
+    rentang: dict[tuple[str, str, str], list[tuple[float, float, float]]] = defaultdict(list)
     for b in arsip:
         if b["horizon"] not in ("H+1", "H+7"):
             continue
@@ -62,8 +64,15 @@ def skor_harga(
         a, p = kelompok[(b["komoditas_id"], b["pasar_id"], b["horizon"])]
         a.append(nilai)
         p.append(b["harga_prediksi"])
+        # cakupan P10-P90: hanya titik dengan rentang nyata (rentang = titik berarti belum dikalibrasi)
+        bawah, atas = b.get("rentang_bawah"), b.get("rentang_atas")
+        if bawah is not None and atas is not None and bawah != atas:
+            rentang[(b["komoditas_id"], b["pasar_id"], b["horizon"])].append((nilai, bawah, atas))
     return [
-        _baris("harga", {"komoditas_id": k, "pasar_id": u}, h, a, p, "harga_v1.0.0")
+        {
+            **_baris("harga", {"komoditas_id": k, "pasar_id": u}, h, a, p, "harga_v1.0.0"),
+            **_cakupan(rentang.get((k, u, h))),
+        }
         for (k, u, h), (a, p) in sorted(kelompok.items())
     ]
 
@@ -74,6 +83,7 @@ def skor_demand(
     awal = awal_minggu_skor(akhir)
     panjang = {"H+7_total_kg": 7, "H+30": 30}
     kelompok: dict[tuple[str, str, str], tuple[list, list]] = defaultdict(lambda: ([], []))
+    rentang: dict[tuple[str, str, str], list[tuple[float, float, float]]] = defaultdict(list)
     for b in arsip:
         n = panjang.get(b["horizon"])
         asal = date.fromisoformat(b["tanggal"])
@@ -86,8 +96,15 @@ def skor_demand(
         a, p = kelompok[(b["komoditas_id"], b["zona"], b["horizon"])]
         a.append(sum(seri[d] for d in hari))
         p.append(b["demand_prediksi_kg"])
+        if b.get("rentang_bawah_kg") is not None and b.get("rentang_atas_kg") is not None:
+            rentang[(b["komoditas_id"], b["zona"], b["horizon"])].append(
+                (a[-1], b["rentang_bawah_kg"], b["rentang_atas_kg"])
+            )
     return [
-        _baris("demand", {"komoditas_id": k, "zona": u}, h, a, p, "demand_v1.0.0")
+        {
+            **_baris("demand", {"komoditas_id": k, "zona": u}, h, a, p, "demand_v1.0.0"),
+            **_cakupan(rentang.get((k, u, h))),
+        }
         for (k, u, h), (a, p) in sorted(kelompok.items())
     ]
 
@@ -116,6 +133,12 @@ def skor_panen(
     return hasil
 
 
+def _cakupan(titik: Sequence[tuple[float, float, float]] | None) -> dict:
+    """{n_cakupan, n_dalam}: jumlah titik berrentang dan yang aktualnya di dalam [bawah, atas]."""
+    titik = titik or []
+    return {"n_cakupan": len(titik), "n_dalam": sum(1 for a, b, t in titik if b <= a <= t)}
+
+
 def _baris(jenis: str, kunci: dict, horizon: str, aktual: list, prediksi: list, versi: str) -> dict:
     b = bias_ringkas(aktual, prediksi)
     return {"jenis": jenis, **kunci, "horizon": horizon, "mape": mape(aktual, prediksi),
@@ -136,6 +159,11 @@ def ringkas_minggu(skor: Sequence[dict], akhir: date) -> dict:
             return None
         return sum(b["bias_pct"] * b["n"] for b in baris if b.get("bias_pct") is not None) / total
 
+    def cakupan_gabungan(baris):
+        n = sum(b.get("n_cakupan", 0) for b in baris)
+        pct = 100.0 * sum(b.get("n_dalam", 0) for b in baris) / n if n else None
+        return {"cakupan_pct": pct, "n_cakupan": n, "status_cakupan": status_cakupan(pct)}
+
     harga = [s for s in skor if s["jenis"] == "harga"]
     demand = [s for s in skor if s["jenis"] == "demand"]
     return {
@@ -146,18 +174,39 @@ def ringkas_minggu(skor: Sequence[dict], akhir: date) -> dict:
             "mape_h7": rata(s["mape"] for s in harga if s["horizon"] == "H+7"),
             "bias_pct": bias_gabungan(harga),
             "n": sum(s["n"] for s in harga),
+            **cakupan_gabungan(harga),
         },
         "demand": {
             "mape_h7": rata(s["mape"] for s in demand if s["horizon"] == "H+7_total_kg"),
             "mape_h30": rata(s["mape"] for s in demand if s["horizon"] == "H+30"),
             "bias_pct": bias_gabungan(demand),
             "n": sum(s["n"] for s in demand),
+            **cakupan_gabungan(demand),
         },
         "panen": {
             "mape_musim": rata(s["mape"] for s in skor if s["jenis"] == "panen"),
             "n": sum(1 for s in skor if s["jenis"] == "panen"),
         },
     }
+
+
+MIN_TITIK_KALIBRASI_ULANG = 5  # ASUMSI: hindari memicu kalibrasi ulang dari sampel sangat kecil
+
+
+def pasangan_kalibrasi_ulang(skor_harga_baris: Sequence[dict]) -> list[tuple[str, str, float]]:
+    """(komoditas, pasar, cakupan%) yang cakupannya < 60% (digabung H+1 dan H+7, minimal 5 titik)."""
+    n: dict[tuple[str, str], int] = defaultdict(int)
+    dalam: dict[tuple[str, str], int] = defaultdict(int)
+    for s in skor_harga_baris:
+        kunci = (s["komoditas_id"], s["pasar_id"])
+        n[kunci] += s.get("n_cakupan", 0)
+        dalam[kunci] += s.get("n_dalam", 0)
+    hasil = []
+    for kunci, jumlah in sorted(n.items()):
+        pct = 100.0 * dalam[kunci] / jumlah if jumlah else None
+        if jumlah >= MIN_TITIK_KALIBRASI_ULANG and perlu_kalibrasi_ulang(pct):
+            hasil.append((*kunci, pct))
+    return hasil
 
 
 def alarm_mape_h7(riwayat_h7: Sequence[float | None]) -> bool:

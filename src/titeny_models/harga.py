@@ -32,6 +32,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
 
+from .kalibrasi import Kalibrasi, hitung_kepercayaan, rentang_harga
 from .katalog import VERSI_HARGA
 
 WIB = timezone(timedelta(hours=7))
@@ -89,17 +90,23 @@ def koreksi_tren(nilai: float, harga: Seri, hari_ini: date, langkah: int) -> tup
 
     Mengembalikan (nilai_terkoreksi, lereng_relatif_terbatas). Kurang dari 3 titik -> tanpa koreksi.
     """
+    lereng = _lereng_relatif(harga, hari_ini)
+    return nilai * (1.0 + lereng * langkah), lereng
+
+
+def _lereng_relatif(harga: Seri, hari_ini: date) -> float:
+    """Kemiringan OLS 21 hari / rerata, dibatasi +-8%/hari; 0 bila < 3 titik atau rerata <= 0."""
     jendela = _jendela(harga, hari_ini, JENDELA_TREN)
     if len(jendela) < 3:
-        return nilai, 0.0
+        return 0.0
     xs = np.array([(d - hari_ini).days for d in jendela], dtype=float)
     ys = np.array(list(jendela.values()), dtype=float)
     rerata = float(ys.mean())
     if rerata <= 0:
-        return nilai, 0.0
-    kemiringan = float(np.polyfit(xs, ys, 1)[0])
-    lereng = max(-LERENG_MAKS, min(LERENG_MAKS, kemiringan / rerata))
-    return nilai * (1.0 + lereng * langkah), lereng
+        return 0.0
+    dx = xs - xs.mean()
+    kemiringan = float((dx * (ys - rerata)).sum() / (dx * dx).sum())  # regresi linier kuadrat terkecil
+    return max(-LERENG_MAKS, min(LERENG_MAKS, kemiringan / rerata))
 
 
 # --------------------------- Langkah 3 ---------------------------
@@ -169,6 +176,8 @@ class InputHarga:
     libur: frozenset[date] = frozenset()  # S9
     sampel_lapak: int = 0  # S4; dipakai kepercayaan (TTN-AI-005)
     waktu_hitung: datetime | None = None
+    kalibrasi: Mapping[str, Kalibrasi] = field(default_factory=dict)  # per horizon ("H+1".."H+7"), TTN-AI-005
+    mape_14h: float | None = None  # MAPE H+1 14 hari terakhir pasangan ini (kepercayaan)
 
 
 @dataclass(frozen=True)
@@ -201,6 +210,16 @@ class PrediksiHarga:
         }
 
 
+def _irisan_biaya(biaya: Seri, hari_ini: date) -> dict[date, float]:
+    """Hanya dua titik yang dipakai koreksi logistik: terbaru (< H) dan terbaru pada/sebelum H-30."""
+    sebelum = [d for d in biaya if d < hari_ini]
+    if not sebelum:
+        return {}
+    acuan = hari_ini - timedelta(days=JENDELA_MEDIAN)
+    lama = [d for d in sebelum if d <= acuan]
+    return {d: biaya[d] for d in ([max(sebelum)] + ([max(lama)] if lama else []))}
+
+
 def ramal_harga_pasangan(masuk: InputHarga) -> list[PrediksiHarga] | None:
     """H+1..H+7 untuk satu pasangan; `None` bila dihentikan (S1 kosong >= 3 hari)."""
     status, _ = status_data(masuk.harga, masuk.hari_ini)
@@ -208,9 +227,14 @@ def ramal_harga_pasangan(masuk: InputHarga) -> list[PrediksiHarga] | None:
         return None
 
     waktu = masuk.waktu_hitung or datetime.now(WIB)
-    median_30h = _median(_jendela(masuk.harga, masuk.hari_ini, JENDELA_MEDIAN).values())
+    # Semua langkah hanya memakai <= 30 hari terakhir: iris sekali agar replay (backtest/kalibrasi) cepat.
+    harga = _jendela(masuk.harga, masuk.hari_ini, JENDELA_MEDIAN)
+    stok = _jendela(masuk.stok, masuk.hari_ini, JENDELA_STOK)
+    biaya = _irisan_biaya(masuk.biaya_logistik, masuk.hari_ini)
+    lereng = _lereng_relatif(harga, masuk.hari_ini)  # sama untuk semua horizon
+    median_30h = _median(harga.values())
     fallback = status == "data_kemarin"
-    median_7h = _median(_jendela(masuk.harga, masuk.hari_ini, JENDELA_FALLBACK).values()) if fallback else 0.0
+    median_7h = _median(_jendela(harga, masuk.hari_ini, JENDELA_FALLBACK).values()) if fallback else 0.0
 
     hasil: list[PrediksiHarga] = []
     for i in range(1, 8):
@@ -222,19 +246,19 @@ def ramal_harga_pasangan(masuk: InputHarga) -> list[PrediksiHarga] | None:
             alasan.append("data_kemarin")
             alasan.append("median_7h")
         else:
-            nilai, jatuh = baseline_musiman(masuk.harga, masuk.hari_ini, target, masuk.libur)
+            nilai, jatuh = baseline_musiman(harga, masuk.hari_ini, target, masuk.libur)
             jenis = "semua_hari" if jatuh else jenis_hari(target, masuk.libur)
             alasan.append(f"median_14h_{jenis}")
 
-        nilai, lereng = koreksi_tren(nilai, masuk.harga, masuk.hari_ini, i)
+        nilai *= 1.0 + lereng * i
         if abs(lereng) >= 0.0005:
             alasan.append("tren_naik" if lereng > 0 else "tren_turun")
 
-        nilai, rasio = koreksi_stok(nilai, masuk.stok, masuk.hari_ini)
+        nilai, rasio = koreksi_stok(nilai, stok, masuk.hari_ini)
         if rasio is not None and (rasio < STOK_RENDAH or rasio > STOK_TINGGI):
             alasan.append(f"stok_gudang_{round(rasio * 100)}%_dari_rerata")
 
-        nilai, selisih = koreksi_logistik(nilai, masuk.biaya_logistik, masuk.hari_ini)
+        nilai, selisih = koreksi_logistik(nilai, biaya, masuk.hari_ini)
         if selisih:
             alasan.append(f"logistik_{selisih:+.0f}_per_kg")
 
@@ -242,8 +266,15 @@ def ramal_harga_pasangan(masuk: InputHarga) -> list[PrediksiHarga] | None:
             alasan.append("dipotong_batas_30h")
         akhir = potong_dan_bulatkan(nilai, median_30h)
 
-        # Rentang & kepercayaan: dikalibrasi TTN-AI-005. Jangan mengarang rentang sebelum itu.
-        alasan.append("rentang_belum_dikalibrasi")
+        # Rentang P10-P90 dan kepercayaan (TTN-AI-005). Tanpa kalibrasi: rentang = titik, kepercayaan `rendah`
+        # (tidak mengarang rentang).
+        kal = masuk.kalibrasi.get(f"H+{i}")
+        if kal is None:
+            alasan.append("rentang_belum_dikalibrasi")
+            bawah, atas, kepercayaan = akhir, akhir, "rendah"
+        else:
+            bawah, atas = rentang_harga(akhir, kal)
+            kepercayaan = hitung_kepercayaan(masuk.sampel_lapak, masuk.mape_14h)
         hasil.append(
             PrediksiHarga(
                 komoditas_id=masuk.komoditas_id,
@@ -251,9 +282,9 @@ def ramal_harga_pasangan(masuk: InputHarga) -> list[PrediksiHarga] | None:
                 tanggal_prediksi=target,
                 horizon=f"H+{i}",
                 harga_prediksi=akhir,
-                rentang_bawah=akhir,
-                rentang_atas=akhir,
-                kepercayaan="rendah",
+                rentang_bawah=bawah,
+                rentang_atas=atas,
+                kepercayaan=kepercayaan,
                 alasan_singkat=" + ".join(alasan),
                 model_version=VERSI_HARGA,
                 dihitung_pada=waktu,

@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from .harga import WIB
+from .kalibrasi import Kalibrasi, rentang_kg
 from .katalog import VERSI_PANEN
 
 LAG_SEREAL = (90, 120)  # padi, jagung
@@ -98,6 +99,7 @@ class InputPanen:
     faktor_musim: float = 1.0
     baseline_tahun_lalu: float | None = None
     waktu_hitung: datetime | None = None
+    kalibrasi: Kalibrasi | None = None  # P10/P90 residual relatif (TTN-AI-005); None = belum ada aktual panen
 
 
 @dataclass(frozen=True)
@@ -142,14 +144,18 @@ def ramal_panen_pasangan(masuk: InputPanen) -> list[PrediksiPanen] | None:
         mulai = senin + timedelta(days=7 * k)
         luas = luas_ekspektasi(masuk.tanam, masuk.komoditas_id, mulai)
         kg = luas * yld * cuaca * masuk.faktor_musim
+        titik = bulatkan_50(kg)
+        bawah, atas = rentang_kg(kg, masuk.kalibrasi)
+        if bawah is not None:  # kelipatan 50 kg dan tetap memuat titik
+            bawah, atas = min(bulatkan_50(bawah), titik), max(bulatkan_50(atas), titik)
         hasil.append(
             PrediksiPanen(
                 komoditas_id=masuk.komoditas_id,
                 kabupaten_id=masuk.kabupaten_id,
                 minggu=minggu_iso(mulai),
-                panen_prediksi_kg=bulatkan_50(kg),
-                rentang_bawah_kg=None,
-                rentang_atas_kg=None,
+                panen_prediksi_kg=titik,
+                rentang_bawah_kg=bawah,
+                rentang_atas_kg=atas,
                 kepercayaan=kepercayaan,
                 model_version=VERSI_PANEN,
                 dihitung_pada=waktu,

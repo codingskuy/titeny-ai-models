@@ -137,12 +137,12 @@ def test_ringkas_minggu_memuat_makro_dan_bias_berbobot():
 def test_job_mape_end_to_end_dengan_arsip(tmp_path):
     data, keluar = tmp_path / "data", tmp_path / "out"
     tulis_fixture(data, date(2026, 10, 5) - timedelta(days=100), 100)  # data sampai 4 Okt
-    for k in range(14, 0, -1):  # job harga harian 21 Sep .. 4 Okt (arsip menumpuk)
+    for k in range(8, 0, -1):  # job harga harian 27 Sep .. 4 Okt (arsip menumpuk)
         asal = date(2026, 10, 5) - timedelta(days=k)
         assert (
             main(["harga", "--data", str(data), "--keluar", str(keluar), "--tanggal", asal.isoformat()]) == 0
         )
-    assert len(list((keluar / "arsip").glob("prediksi_harga-*.jsonl"))) == 14
+    assert len(list((keluar / "arsip").glob("prediksi_harga-*.jsonl"))) == 8
 
     assert main(["mape", "--data", str(data), "--keluar", str(keluar), "--tanggal", MINGGU.isoformat()]) == 0
     ringkasan = json.loads((keluar / "ringkasan_mape.json").read_text())

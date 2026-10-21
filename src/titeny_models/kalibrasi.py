@@ -15,8 +15,11 @@ Definisi (ASUMSI di mana TownHall tidak eksplisit; dicatat di PR dan ADR-0003):
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from bisect import bisect_right
+from collections import defaultdict
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import date
 
 import numpy as np
 
@@ -98,3 +101,40 @@ def status_cakupan(cakupan_pct: float | None) -> str:
     if cakupan_pct <= CAKUPAN_MAKS:
         return "ok"
     return "terlalu_lebar"
+
+
+HARI_HORIZON = {**{f"H+{i}": i for i in range(1, 8)}, "H+7_total_kg": 7, "H+30": 30}
+
+
+def residual_relatif(aktual: float, prediksi: float) -> float | None:
+    return None if prediksi <= 0 else (aktual - prediksi) / prediksi
+
+
+def cakupan_walk_forward(
+    baris: list[dict],
+    kunci_unit: str,
+    fn_rentang: Callable[[float, Kalibrasi], tuple[float | None, float | None]],
+) -> dict[str, float | int | None]:
+    """Cakupan P10-P90 out-of-sample dari baris backtest.
+
+    Untuk tiap baris pada hari asal O, interval dikalibrasi dari residual yang SUDAH diketahui pada O
+    (target < O) untuk (komoditas, unit, horizon) yang sama; baris tanpa cukup residual dilewati.
+    """
+    kelompok: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    for b in baris:
+        kelompok[(b["komoditas_id"], b[kunci_unit], b["horizon"])].append(b)
+    dalam = total = 0
+    for (_, _, horizon), rows in kelompok.items():
+        rows.sort(key=lambda b: b["origin"])
+        hari = HARI_HORIZON[horizon]
+        ordinal = [date.fromisoformat(b["origin"]).toordinal() for b in rows]
+        residual = [residual_relatif(b["aktual"], b["prediksi"]) for b in rows]
+        for j, b in enumerate(rows):
+            diketahui = bisect_right(ordinal, ordinal[j] - hari - 1)  # origin_i + hari <= origin_j - 1
+            kal = kalibrasi_dari_residual([r for r in residual[:diketahui] if r is not None])
+            if kal is None:
+                continue
+            bawah, atas = fn_rentang(b["prediksi"], kal)
+            total += 1
+            dalam += bawah <= b["aktual"] <= atas
+    return {"n": total, "cakupan_pct": 100.0 * dalam / total if total else None}
