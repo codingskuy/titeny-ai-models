@@ -1,6 +1,7 @@
 """Model Titeny: harga, panen, demand."""
 
+from .demand import ramal_demand_pasangan
 from .harga import ramal_harga_pasangan
 from .panen import ramal_panen_pasangan
 
-__all__ = ["ramal_harga_pasangan", "ramal_panen_pasangan"]
+__all__ = ["ramal_demand_pasangan", "ramal_harga_pasangan", "ramal_panen_pasangan"]
