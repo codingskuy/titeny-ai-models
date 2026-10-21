@@ -143,6 +143,9 @@ def tulis_fixture(keluar: Path, awal: date, hari: int) -> None:
         w.writerow(["tanggal", "jenis_hari"])
         for d in sorted(libur_sintetis(awal, awal + timedelta(days=hari + 40))):
             w.writerow([d.isoformat(), "libur"])
+    from .sintetis_agro import tulis_fixture_agro  # impor lambat: hindari impor melingkar
+
+    tulis_fixture_agro(keluar, awal + timedelta(days=hari), hari)
 
 
 if __name__ == "__main__":
