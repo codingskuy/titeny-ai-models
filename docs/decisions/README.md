@@ -12,3 +12,4 @@ Aturan menambah ADR:
 | ADR | Judul | Status |
 |---|---|---|
 | [ADR-0001](./ADR-0001-fondasi-teknis.md) | Fondasi teknis | Diterima |
+| [ADR-0002](./ADR-0002-kontrak-job-evaluasi-dan-gerbang-versi.md) | Kontrak job, definisi evaluasi, gerbang versi | Diusulkan |
