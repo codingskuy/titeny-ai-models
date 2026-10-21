@@ -23,6 +23,7 @@ import numpy as np
 from .harga import InputHarga
 from .katalog import KOMODITAS_HARGA, PASAR
 
+PENANDA = "SINTETIS.txt"  # berkas penanda di direktori fixture; dibaca backtest untuk melabeli sumber data
 TANGGAL_ACUAN = date(2026, 10, 5)  # Senin
 
 HARGA_DASAR = {  # IDR/kg (atau per butir/liter) kasar; hanya untuk skala fixture
@@ -119,6 +120,9 @@ def bangun_masukan_harga_sintetis(
 def tulis_fixture(keluar: Path, awal: date, hari: int) -> None:
     """Menulis CSV sintetis untuk 12 komoditas x 8 pasar sepanjang `hari` hari mulai `awal`."""
     keluar.mkdir(parents=True, exist_ok=True)
+    (keluar / PENANDA).write_text(
+        "Data SINTETIS (bukan data pasar nyata); metrik di atasnya bukan akurasi produksi.\n"
+    )
     with (
         (keluar / "harga_harian.csv").open("w", newline="") as f1,
         (keluar / "logistik.csv").open("w", newline="") as f2,
